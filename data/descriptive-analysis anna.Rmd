@@ -1,0 +1,254 @@
+---
+title: "NA Group Work Descriptive Analysis"
+output: html_document
+date: "2023-03-03"
+---
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+library(data.table)
+library(ggplot2)       
+library(dplyr)
+library(igraph)
+library(tidyr)
+```
+
+## Loading & Saving data
+
+For the data cleaning part, please refer to the Python Notebook 'data-cleaning.ipynb'.
+
+```{r}
+dt.startup.invest <- fread("unicorn-clean.csv")
+
+# Count how many investors each company has
+dt.startup.invest[, n_investors := .N, by=list(Company, year)]
+
+# Average invest per investor
+dt.startup.invest$avg_invest <- dt.startup.invest$BValuation / dt.startup.invest$n_investors
+
+# Save dt.startup.invest
+save(dt.startup.invest, file="dt.startup.invest.RData")
+```
+
+Loading the data:
+
+```{r}
+load('dt.startup.invest.RData')
+
+# Creating datatable with distinct companies, summarizing investors
+dt.startup <- dt.startup.invest %>%
+  group_by(Company) %>%
+  summarize(investors = list(investor), year = mean(year), BValuation = mean(BValuation), 
+            n_investors = mean(n_investors), avg_invest = mean(avg_invest)) %>%
+  unique()
+```
+
+## General insights
+
+
+#### Do big investors invest in the same startups?
+```{r}
+# How many startups are there?
+sprintf('The total number of startups in the dataset is %d', nrow(dt.startup))
+
+# Which investor invests the most on average?
+top.avg.investor <- dt.startup.invest %>%
+  group_by(investor) %>%
+  summarize(avg_investment = mean(avg_invest)) %>%
+  arrange(desc(avg_investment)) %>%
+  head(1)
+sprintf('The investor with the highest average investment is %s with an average of %f billion dollars', top.avg.investor$investor, top.avg.investor$avg_investment)
+
+# Which investor invests the most in total?
+top.total.investor <- dt.startup.invest %>%
+  group_by(investor) %>%
+  summarize(total_investment = sum(avg_invest)) %>%
+  arrange(desc(total_investment)) %>%
+  head(1)
+sprintf('The investor with the highest total investment is %s with a total of %f billion dollars', top.total.investor$investor, top.total.investor$total_investment)
+
+# Is there a startup in which the three biggest investors invested?
+top.3.total.investor <- dt.startup.invest %>%
+  group_by(investor) %>%
+  summarize(total_investment = sum(avg_invest)) %>%
+  arrange(desc(total_investment)) %>%
+  head(3)
+
+seq.cap.china <- dt.startup.invest[dt.startup.invest$investor == 'Sequoia Capital China']$Company
+seq.cap <- dt.startup.invest[dt.startup.invest$investor == 'Sequoia Capital']$Company
+kho.ven <- dt.startup.invest[dt.startup.invest$investor == 'Khosla Ventures']$Company
+
+startup.intersect <- Reduce(intersect, list(seq.cap, seq.cap.china, kho.ven))
+sprintf('There are %d startups the three biggest investors intersected in.', length(startup.intersect))
+```
+#### Number of investments & startups per year
+```{r}
+# Number of startups per year & accumulated
+n.startups <- dt.startup %>%
+  group_by(year) %>%
+  summarize(n_startups = n()) %>%
+  mutate(csum_n_startups = cumsum(n_startups))
+n.startups
+
+# Number of investments per year & accumulated
+n.invest <- dt.startup.invest %>%
+  group_by(year) %>%
+  summarize(n_startups = n()) %>%
+  mutate(csum_n_startups = cumsum(n_startups))
+n.invest
+```
+#### What is the year with the highest number of investments made by a single investor?
+
+```{r}
+top.invest.year <- dt.startup.invest %>%
+  group_by(year, investor) %>%
+  summarize(n_investments = n(), sum_investment = sum(avg_invest), .groups = "drop") %>%
+  arrange(desc(n_investments)) %>%
+  head(1)
+sprintf('The year with the highest number og investments made by a single investor is %d by %s with a total of $%f (in billion) in %d investments', top.invest.year$year, top.invest.year$investor, top.invest.year$sum_investment, top.invest.year$n_investments)
+
+```
+
+#### Most popular startups (according to valuation)
+
+```{r}
+# Top 10% most popular startups
+val.threshold <- quantile(dt.startup$BValuation, 0.9, na.rm = TRUE)
+dt.startups.popular <- subset(dt.startup.invest, BValuation >= val.threshold)
+
+# Top 10 investors
+invest.popular.10 <- dt.startups.popular %>%
+  group_by(investor) %>%
+  summarize(n_investments = n()) %>%
+  arrange(desc(n_investments)) %>%
+  head(10)
+invest.popular.10
+```
+
+### Plotting data
+```{r}
+# Number of new startups per year
+# Subset data --------------------------
+dt.startup.year <- select(dt.startup, year)
+
+# Plot data ----------------------------
+ggplot(dt.startup.year, aes(x = year)) + geom_histogram(binwidth = 1) + labs(title = "Number of Startups per Year", x = "Year", y = "Number of Startups")
+
+```
+
+```{r}
+# Subset data ----------------------------
+dt.invest.year <- select(dt.startup, BValuation)
+
+# Plot data ------------------------------
+ggplot(dt.invest.year, aes(x = BValuation)) + geom_histogram(binwidth = 0.2) + scale_x_log10() + labs(title = "Distribution of Startup Valuation", x = "Valuation (log)", y = "Number of Investments")
+
+```
+### Investors investing in the top 50 most popular startups
+
+```{r}
+# Subset data
+startup.50 <- dt.startup.invest[ , .N, by = list(Company, BValuation)]
+startup.50 <- startup.50[order(-BValuation)][1:50, Company]
+
+# List of all actors to find movies with these actors
+l.investor.startup.50 <- dt.startup.invest[Company %in% startup.50, unique(investor)]
+dt.investor.50 <- dt.startup.invest[investor %in% l.investor.startup.50,]
+
+# Create vertices
+all.investors <- dt.investor.50[, list(name = unique(investor), type=TRUE)]
+all.startups <- dt.investor.50[, list(name = unique(Company), type=FALSE)]
+all.vertices <- rbind(all.investors, all.startups)
+
+# Create graph
+g <- graph.data.frame(dt.investor.50[, list(Company, investor)], directed = FALSE, vertices = all.vertices)
+
+V(g)$type <- bipartite_mapping(g)$type
+plot(g, vertex.size = 6, vertex.label = NA)     
+
+sprintf('There are %d investments', gsize(g))
+
+```
+#### Connectivity of startups
+
+They are connected, if they have **at least one investor** in common.
+```{r}
+# Subset data
+dt.investors.50 <- dt.investor.50 %>%
+  group_by(Company)%>%
+  summarize(investors = list(investor)) %>%
+  unique()
+startup.investor.names <- setNames(dt.investors.50$investors, dt.investors.50$Company)
+
+# Create an empty graph
+g.graph <- make_empty_graph(directed = FALSE)
+
+# Add the movie nodes to the graph
+g.graph <- add.vertices(g.graph, nv = length(dt.investors.50$Company), name = names(startup.investor.names))
+
+# Add edges to the graph between movies that share an actor
+for (i in 1:(length(startup.investor.names)-1)) {
+  for (j in (i+1):length(startup.investor.names)) {
+    if (length(intersect(startup.investor.names[[i]], startup.investor.names[[j]])) > 0) {
+      g.graph <- add_edges(g.graph, c(i,j))
+    }
+  }
+}
+
+# Calculate the degree centrality for each movie
+degree_centrality <- degree(g.graph, mode = "total")
+
+# Remove movies with no connections to other movies
+g.connect <- induced.subgraph(g.graph, which(degree_centrality > 0))
+
+# Plot the graph
+plot(g.connect, vertex.size = 6, edge.arrow.size = 0.1, vertex.label = NA)
+
+# Centrality
+centrality <- data.table(Node = V(g.connect)$name,
+               Degree = degree(g.connect),
+               Closeness = round(closeness(g.connect, normalized = TRUE), 4),
+               Betweenness = round(betweenness(g.connect, normalized = TRUE), 4),
+               Eigenvector = round(evcent(g.connect)$vector, 4))
+head(centrality)
+
+clust.coef <- transitivity(g.connect, type = "average")
+sprintf('The average clustering coefficient for the startup network is %f', clust.coef)
+
+```
+```{r}
+investor <- "6Sense"
+scc <- neighbors(g.connect, investor)
+
+# Create induced subgraph with nearest Interstellar neighbors
+add.scc <- c(scc, V(g.connect)[investor])
+g.investor <- induced.subgraph(g.connect, vids = add.scc)
+
+# Plot the graph
+plot(g.investor, vertex.size = 9, edge.arrow.size = 0.1, vertex.color = ifelse(V(g.investor)$name == investor, "salmon", "lightblue"), vertex.label = NA)
+
+# Clustering coefficient
+clust.coef <- transitivity(g.investor, type = "local", vids = investor)
+sprintf('The local clustering coefficient of %s is %f', investor, clust.coef)
+```
+# Most participation of actors not participating in movie itself
+dt.interstellar.neighbor <- data.table(movie = V(g.movie)$name)
+dt.interstellar.neighbor <- merge(dt.interstellar.neighbor, dt.movie.actor, by = 'movie')
+
+`%!in%` <- Negate(`%in%`)
+actor.interstellar <- as.list(unlist((dt.interstellar.neighbor[movie == "Interstellar (2014)"])$actor))
+dt.interstellar.neighbor <- dt.interstellar.neighbor[dt.interstellar.neighbor$actor %!in% actor.interstellar]
+
+most.p.interstellar <- dt.interstellar.neighbor %>%
+  group_by(actor) %>%
+  summarize(interstellar_n_p = n()) %>%
+  arrange(desc(interstellar_n_p)) %>%
+  head(1)
+sprintf('The actor with the most participations in the network without participating in %s itself is %s with a total of %d participations', movie, most.p.interstellar$actor, most.p.interstellar$interstellar_n_p)
+
+
